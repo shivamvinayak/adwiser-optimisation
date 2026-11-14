@@ -1,175 +1,213 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-from scipy.optimize import minimize
-from numpy import log as ln
+"""Generic proportional-fair slice optimization for any number of links.
+
+Model notes
+-----------
+- A "link" can represent any STA<->AP communication edge.
+- For N links, decision variables are created for every non-empty active-set subset,
+  i.e., 2^N - 1 variables.
+- Each variable x_S denotes the resource fraction assigned when exactly links in set
+  S are active.
+- The optimizer maximizes sum(log(rate_i)) over a chosen set of target links.
+
+rate_i = beta_i * sum_{S: i in S} x_S * alpha_{i,S}
+
+where alpha_{i,S} is the normalized throughput factor of link i when S is active.
+"""
+
+from itertools import combinations
+from typing import Dict, Iterable, List, Sequence, Tuple
+
 import numpy as np
+from scipy.optimize import minimize
 
 
+Subset = Tuple[int, ...]  # sorted tuple of 0-based link indices
 
-def obj_fun(x,alpha,link,beta):
-    
-    #alpha = [0.23, 0.65]
-            
-    #the variables
-    x1  = x[0]
-    x2  = x[1]
-    x3  = x[2]
-    x4  = x[3]
-    x12 = x[4]
-    x13 = x[5]
-    x14 = x[6]
-    x23 = x[7]
-    x24 = x[8]
-    x34 = x[9]
-    x123 = x[10]
-    x124 = x[11]
-    x134 = x[12]
-    x234 = x[13]
-    x1234 = x[14]
-    
-    #isolated throughput
-    beta1 = beta[0]
-    beta2 = beta[1]
-    beta3 = beta[2]
-    beta4 = beta[3] 
 
-    #returns the objective function as per the elected link to the scipy solver   
-    if link == "1100":#links 1 & 2 active
-        return -(ln(x1*beta1 + x12*alpha[0]*beta1) + ln(x2*beta2 + x12*alpha[3]*beta2))
-    
-    elif link == "1010":#links 1 & 3 active
-        return -(ln(x1*beta1 + x13*alpha[1]*beta1) + ln(x3*beta3 + x13*alpha[6]*beta3))
-    
-    elif link == "1001":#links 1 & 4 active
-        return -(ln(x1*beta1 + x14*alpha[2]*beta1) + ln(x4*beta4 + x14*alpha[9]*beta4))
-    
-    elif link == "0110":#links 2 & 3 active
-        return -(ln(x2*beta2 + x23*alpha[4]*beta2) + ln(x3*beta3 + x23*alpha[7]*beta3))
-    
-    elif link == "0101":#links 2 & 4 active
-        return -(ln(x2*beta2 + x24*alpha[5]*beta2) + ln(x4*beta4 + x24*alpha[10]*beta4))
-    
-    elif link == "0011":#links 3 & 4 active
-        return -(ln(x3*beta3 + x34*alpha[8]*beta3) + ln(x4*beta4 + x34*alpha[11]*beta4)) 
-    
-    elif link == "1110":#links 1, 2 & 3 active
-        return -(ln(x1*beta1 + x12*alpha[0]*beta1 + x13*alpha[1]*beta1 + x123*alpha[12]*beta1)
-               + ln(x2*beta2 + x12*alpha[3]*beta2 + x23*alpha[4]*beta2 + x123*alpha[15]*beta2)
-               + ln(x3*beta3 + x13*alpha[6]*beta3 + x23*alpha[7]*beta3 + x123*alpha[18]*beta3))
-    
-    elif link == "1101":# links 1, 2 & 4 active
-        return -(ln(x1*beta1 + x12*alpha[0]*beta1 + x14*alpha[2]*beta1 + x124*alpha[13]*beta1)
-               + ln(x2*beta2 + x12*alpha[3]*beta2 + x24*alpha[5]*beta2 + x124*alpha[16]*beta2)
-               + ln(x4*beta4 + x14*alpha[9]*beta4 + x24*alpha[10]*beta4 + x124*alpha[21]*beta4))
-    
-    elif link == "1011": #links 1, 3 & 4 active        
-        return -(ln(x1*beta1 + x13*alpha[1]*beta1 + x14*alpha[2]*beta1 + x134*alpha[14]*beta1)
-               + ln(x3*beta3 + x13*alpha[6]*beta3 + x34*alpha[8]*beta3 + x134*alpha[19]*beta3)
-               + ln(x4*beta4 + x14*alpha[9]*beta4 + x34*alpha[11]*beta4 + x134*alpha[22]*beta4))
-    
-    elif link == "0111": #links 1, 3 & 4 active
-        return -(ln(x2*beta2 + x23*alpha[4]*beta2 + x24*alpha[5]*beta2 + x234*alpha[17]*beta2)
-               + ln(x3*beta3 + x23*alpha[7]*beta3 + x34*alpha[8]*beta3 + x234*alpha[20]*beta3)
-               + ln(x4*beta4 + x24*alpha[10]*beta4 + x34*alpha[11]*beta4 + x234*alpha[23]*beta4))
-        
-    elif link == "1111": #links 1, 2, 3 & 4 active
-        return -(ln(x1*beta1 + x12*alpha[0]*beta1 + x13*alpha[1]*beta1 + x14*alpha[2]*beta1 + 
-                x123*alpha[12]*beta1 + x124*alpha[13]*beta1 + x134*alpha[14]*beta1 + x1234*alpha[24]*beta1)
-             + ln(x2*beta2 + x12*alpha[3]*beta2 + x23*alpha[4]*beta2 + x24*alpha[5]*beta2 + 
-                x123*alpha[15]*beta2 + x124*alpha[16]*beta2 + x234*alpha[17]*beta2 + x1234*alpha[25]*beta2)
-             + ln(x3*beta3 + x13*alpha[6]*beta3 + x23*alpha[7]*beta3 + x34*alpha[8]*beta3 + 
-                x123*alpha[18]*beta3 + x134*alpha[19]*beta3 + x234*alpha[20]*beta3 + x1234*alpha[26]*beta3)
-             + ln(x4*beta4 + x14*alpha[9]*beta4 + x24*alpha[10]*beta4 + x34*alpha[11]*beta4 + 
-                x124*alpha[21]*beta4 + x124*alpha[22]*beta4 + x234*alpha[23]*beta4 + x1234*alpha[27]*beta4))
-    
-def constraint(x):
-    # sum x_i = 1
-    return sum(x) - 1
+def non_empty_subsets(n_links: int) -> List[Subset]:
+    """Return all non-empty subsets over [0, n_links)."""
+    return [
+        subset
+        for r in range(1, n_links + 1)
+        for subset in combinations(range(n_links), r)
+    ]
+
+
+def bitmask_to_indices(mask: str) -> Tuple[int, ...]:
+    """Convert bitmask like '1011' into active link indices (0-based)."""
+    return tuple(i for i, bit in enumerate(mask) if bit == "1")
+
+
+def build_alpha(
+    beta: Sequence[float],
+    measurements: Dict[Subset, Sequence[float]],
+) -> Dict[Subset, np.ndarray]:
+    """Build normalized alpha factors from measured throughputs.
+
+    Parameters
+    ----------
+    beta:
+        Isolated throughput per link (length N).
+    measurements:
+        Mapping from subset S to a length-N throughput vector where non-members of S
+        can be 0. For members i in S, alpha_{i,S} = throughput_{i,S} / beta_i.
+
+    Returns
+    -------
+    Dict[Subset, np.ndarray]
+        For each subset, an array length N where valid factors are filled for members
+        and zeros elsewhere.
+    """
+    n_links = len(beta)
+    beta_arr = np.asarray(beta, dtype=float)
+
+    alpha: Dict[Subset, np.ndarray] = {}
+
+    for subset, throughput_vec in measurements.items():
+        subset = tuple(sorted(subset))
+        throughput_arr = np.asarray(throughput_vec, dtype=float)
+        if throughput_arr.shape != (n_links,):
+            raise ValueError(
+                f"Subset {subset}: expected throughput vector length {n_links}, "
+                f"got {throughput_arr.shape}."
+            )
+
+        factors = np.zeros(n_links, dtype=float)
+        for i in subset:
+            if beta_arr[i] <= 0:
+                raise ValueError(f"beta[{i}] must be positive.")
+            factors[i] = throughput_arr[i] / beta_arr[i]
+        alpha[subset] = factors
+
+    # Ensure singleton subsets exist (default alpha=1 for own link).
+    for i in range(n_links):
+        singleton = (i,)
+        if singleton not in alpha:
+            factors = np.zeros(n_links, dtype=float)
+            factors[i] = 1.0
+            alpha[singleton] = factors
+
+    return alpha
+
+
+def objective(
+    x: np.ndarray,
+    subsets: Sequence[Subset],
+    alpha: Dict[Subset, np.ndarray],
+    beta: np.ndarray,
+    target_links: Iterable[int],
+) -> float:
+    """Negative proportional-fair utility for SciPy minimization."""
+    target_links = tuple(target_links)
+
+    rates = np.zeros_like(beta)
+    for x_j, subset in zip(x, subsets):
+        factors = alpha.get(subset)
+        if factors is None:
+            continue
+        rates += x_j * factors * beta
+
+    # Penalize invalid/non-positive rates to keep log well-defined.
+    min_rate = np.min(rates[list(target_links)])
+    if min_rate <= 0:
+        return 1e12 + abs(min_rate) * 1e6
+
+    return -np.sum(np.log(rates[list(target_links)]))
+
+
+def simplex_constraint(x: np.ndarray) -> float:
+    """Constraint enforcing sum(x)=1."""
+    return np.sum(x) - 1.0
+
+
+def optimize_slices(
+    beta: Sequence[float],
+    measurements: Dict[Subset, Sequence[float]],
+    active_mask: str = None,
+    active_links: Sequence[int] = None,
+    seed: int = 7,
+):
+    """Solve the generic slice optimization problem.
+
+    Exactly one of `active_mask` or `active_links` should be provided.
+    """
+    n_links = len(beta)
+    beta_arr = np.asarray(beta, dtype=float)
+
+    if active_mask is not None and active_links is not None:
+        raise ValueError("Provide only one of active_mask or active_links.")
+    if active_mask is None and active_links is None:
+        active_links = tuple(range(n_links))
+    elif active_mask is not None:
+        if len(active_mask) != n_links:
+            raise ValueError(
+                f"active_mask length ({len(active_mask)}) must match n_links ({n_links})."
+            )
+        active_links = bitmask_to_indices(active_mask)
+    else:
+        active_links = tuple(sorted(active_links))
+
+    if not active_links:
+        raise ValueError("At least one active link is required.")
+
+    subsets = non_empty_subsets(n_links)
+    alpha = build_alpha(beta_arr, measurements)
+
+    rng = np.random.default_rng(seed)
+    x0 = rng.random(len(subsets))
+    x0 /= x0.sum()
+
+    bounds = [(0.0, 1.0)] * len(subsets)
+    constraints = [{"type": "eq", "fun": simplex_constraint}]
+
+    sol = minimize(
+        objective,
+        x0,
+        args=(subsets, alpha, beta_arr, active_links),
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+    )
+
+    return sol, subsets, active_links
+
 
 if __name__ == "__main__":
-    #initialize the variables with random values
-    x0 = np.random.random_sample(size = 15)
-    x0 /= x0.sum()
-    #print(obj_fun(x0))
-
-    #bounds for variables
-    b = [0.0,1.0]
-    bound = [b]*15
-    
+    # Example equivalent to original 4-link case, but through generic data structures.
     beta = [101.71, 103.8, 78.06, 122.04]
-    
-    ##select the active links here
-    ## 1100 -> links 1 & 2 active
-    ## 1010 -> Links 1 & 3 active
-    ## 1001 -> Links 1 & 4 active
-    ##..........................
-    ##..........................
-    ## 0111 -> Links 2, 3 & 4 active
-    ## 1111 -> Links 1, 2, 3 & 4 active
-    
-    link = "1111"
-    
-    m12 = [50,50,0,0]
-    m13 = [101,0,39,0]
-    m14 = [101,0,0,122]
-    m23 = [0,30,30,0]
-    m24 = [0,25,0,80]
-    m34 = [0,0,29,80]
-    
-    m123 = [100,2,37,0]
-    m124 = [80,20,0,50]
-    m134 = [80,0,20,50]
-    m234 = [0,20,30,50]
-    
-    m1234 = [50,2,10,40]
-    
-    
-    # the parameter alphai_m the factor by which the throughput
-    # of link i drops when links in set m are active.
-    # m belongs to power set of {1,2,3,4} excluding the null sets. 
-    alpha = np.array([])
-    
-    alpha = np.append(alpha,m12[0]/beta[0])
-    alpha = np.append(alpha,m13[0]/beta[0])
-    alpha = np.append(alpha,m14[0]/beta[0])
-    alpha = np.append(alpha,m12[1]/beta[1])
-    alpha = np.append(alpha,m13[1]/beta[1])
-    alpha = np.append(alpha,m24[1]/beta[1])
-    alpha = np.append(alpha,m13[2]/beta[2])
-    alpha = np.append(alpha,m23[2]/beta[2])
-    alpha = np.append(alpha,m34[2]/beta[2])
-    alpha = np.append(alpha,m14[3]/beta[3])
-    alpha = np.append(alpha,m24[3]/beta[3])
-    alpha = np.append(alpha,m34[3]/beta[3])
-    
-    alpha = np.append(alpha,m123[0]/beta[0])
-    alpha = np.append(alpha,m124[0]/beta[0])
-    alpha = np.append(alpha,m134[0]/beta[0])
-    alpha = np.append(alpha,m123[1]/beta[1])
-    alpha = np.append(alpha,m124[1]/beta[1])
-    alpha = np.append(alpha,m234[1]/beta[1])
-    alpha = np.append(alpha,m123[2]/beta[2])
-    alpha = np.append(alpha,m134[2]/beta[2])
-    alpha = np.append(alpha,m234[2]/beta[2])
-    alpha = np.append(alpha,m124[3]/beta[3])
-    alpha = np.append(alpha,m134[3]/beta[3])
-    alpha = np.append(alpha,m234[3]/beta[3])
-    
-    alpha = np.append(alpha,m1234[0]/beta[0])
-    alpha = np.append(alpha,m1234[1]/beta[1])
-    alpha = np.append(alpha,m1234[2]/beta[2])
-    alpha = np.append(alpha,m1234[3]/beta[3])
-    
-    
-    #add the constraint to solver
-    cons = {'type':'eq','fun': constraint}
 
-    pars = (alpha,link,beta,)
+    # Throughputs per active subset (0-based link indexing).
+    measurements = {
+        (0, 1): [50, 50, 0, 0],
+        (0, 2): [101, 0, 39, 0],
+        (0, 3): [101, 0, 0, 122],
+        (1, 2): [0, 30, 30, 0],
+        (1, 3): [0, 25, 0, 80],
+        (2, 3): [0, 0, 29, 80],
+        (0, 1, 2): [100, 2, 37, 0],
+        (0, 1, 3): [80, 20, 0, 50],
+        (0, 2, 3): [80, 0, 20, 50],
+        (1, 2, 3): [0, 20, 30, 50],
+        (0, 1, 2, 3): [50, 2, 10, 40],
+    }
 
-    #obtain the objective function & passed to scipy solver
-    sol = minimize(obj_fun,x0, args=(pars),method='SLSQP',bounds=bound, constraints=cons)
+    # Active target links; here all links are active.
+    sol, subsets, active_links = optimize_slices(
+        beta=beta,
+        measurements=measurements,
+        active_mask="1111",
+    )
 
+    print("Active links:", active_links)
+    print("Solver success:", sol.success)
+    print("Objective value:", sol.fun)
+    print("Top allocations (subset -> x):")
 
-    # print the vector x, containing optimal values of x_i
-    print(sol)
+    x = sol.x
+    top_idx = np.argsort(-x)[:10]
+    for idx in top_idx:
+        subset = subsets[idx]
+        print(f"  {subset}: {x[idx]:.6f}")
